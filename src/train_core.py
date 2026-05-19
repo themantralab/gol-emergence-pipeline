@@ -415,6 +415,8 @@ def save_checkpoint(
     phase:             int,
     k_max:             int,
     phase2_start_step: int | None = None,
+    frame_sample_rate: float = 1.0,
+    sampling_decaying: bool = False,
     tag:               str = '',
 ):
     path = ckpt_dir / f'core_step{step:07d}{("_" + tag) if tag else ""}.pt'
@@ -725,6 +727,8 @@ def train(args):
                     ckpt_dir, encoder, decoder, transition, traj_head,
                     optimizer, scheduler, lr_current, step, phase, k_max,
                     phase2_start_step=phase2_start_step,
+                    frame_sample_rate=frame_sample_rate,
+                    sampling_decaying=sampling_decaying,
                 )
                 logger.log({'type': 'event', 'event': 'checkpoint', 'run_id': run_id,
                             'step': step, 'phase': phase, 'k_max': k_max,
