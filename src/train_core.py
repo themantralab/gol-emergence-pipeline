@@ -84,6 +84,14 @@ PHASE_WEIGHTS = {
 # Prevents gradient conflict from hitting the encoder all at once at phase entry.
 PHASE2_RAMP_STEPS = 10_000
 
+# Multi-frame mechanics supervision.
+# At each new k_max level, decode up to MAX_INTERMEDIATE_FRAMES random intermediate
+# frames in addition to the endpoint. Once smooth_acc crosses the threshold,
+# frame_sample_rate decays by FRAME_DECAY_STEP per val check until only the
+# endpoint remains. Advancement only allowed at frame_sample_rate == 0.
+MAX_INTERMEDIATE_FRAMES = 16   # max intermediate frames sampled at rate=1.0
+FRAME_DECAY_STEP        = 0.1  # rate reduction per val check after thresh crossed
+
 
 def get_loss_weights(phase: int, step: int, phase2_start_step: int | None) -> dict:
     """Return loss weights, with Phase 2 auxiliary losses ramped in gradually."""
@@ -270,30 +278,37 @@ def build_rollout(
 # ---------------------------------------------------------------------------
 
 def mechanics_loss(
-    decoder: Decoder,
-    z_traj:  torch.Tensor,
-    traj:    torch.Tensor,
-    k:       int,
+    decoder:           Decoder,
+    z_traj:            torch.Tensor,
+    traj:              torch.Tensor,
+    k:                 int,
+    frame_sample_rate: float = 0.0,
 ) -> torch.Tensor:
     """
-    BCE reconstruction loss at rollout depth k.
+    BCE reconstruction loss with optional multi-frame intermediate supervision.
 
-    Decodes z_k = z_traj[:, k] and compares against the real grid at step k.
-    Applied at the sampled depth only (not every step) to keep compute bounded.
+    Always decodes z_k (endpoint). When frame_sample_rate > 0, also decodes up to
+    MAX_INTERMEDIATE_FRAMES random frames from [1, k-1], giving the transition
+    function direct gradient signal at intermediate timesteps rather than relying
+    solely on backprop through k chained applications of f.
 
-    pos_weight upweights alive cells to counteract the severe class imbalance
-    (~378 dead cells per alive cell). Without it, the model minimises loss by
-    predicting all-dead, producing near-zero BCE but ~0% alive-cell accuracy.
+    Loss is averaged across all decoded frames (endpoint + intermediates).
     """
-    z_k      = z_traj[:, k]
-    logits_k = decoder(z_k)                       # (B, 1, H, W)
-    target_k = traj[:, k].float()                 # (B, H, W)
-    pw = torch.tensor([ALIVE_POS_WEIGHT], device=logits_k.device)
-    return F.binary_cross_entropy_with_logits(
-        logits_k.squeeze(1), target_k,
-        pos_weight=pw,
-        reduction='mean',
-    )
+    pw     = torch.tensor([ALIVE_POS_WEIGHT], device=z_traj.device)
+    frames = [k]
+
+    if k > 1 and frame_sample_rate > 0.0:
+        n = max(1, round(frame_sample_rate * min(k - 1, MAX_INTERMEDIATE_FRAMES)))
+        intermediates = np.random.choice(range(1, k), size=min(n, k - 1), replace=False).tolist()
+        frames.extend(intermediates)
+
+    losses = []
+    for t in frames:
+        logits = decoder(z_traj[:, t]).squeeze(1)
+        target = traj[:, t].float()
+        losses.append(F.binary_cross_entropy_with_logits(logits, target, pos_weight=pw, reduction='mean'))
+
+    return torch.stack(losses).mean()
 
 
 def trajectory_loss(
@@ -408,6 +423,8 @@ def save_checkpoint(
         'phase':             phase,
         'k_max':             k_max,
         'phase2_start_step': phase2_start_step,
+        'frame_sample_rate': frame_sample_rate,
+        'sampling_decaying': sampling_decaying,
         'encoder':           encoder.state_dict(),
         'decoder':           decoder.state_dict(),
         'transition':        transition.state_dict(),
@@ -441,9 +458,11 @@ def load_checkpoint(
     optimizer.load_state_dict(ckpt['optimizer'])
     if 'scheduler' in ckpt:
         scheduler.load_state_dict(ckpt['scheduler'])
-    lr_current = ckpt.get('lr_current', LR)
+    lr_current        = ckpt.get('lr_current', LR)
     phase2_start_step = ckpt.get('phase2_start_step', None)
-    return ckpt['step'], ckpt['phase'], ckpt['k_max'], lr_current, phase2_start_step
+    frame_sample_rate = ckpt.get('frame_sample_rate', 1.0)
+    sampling_decaying = ckpt.get('sampling_decaying', False)
+    return ckpt['step'], ckpt['phase'], ckpt['k_max'], lr_current, phase2_start_step, frame_sample_rate, sampling_decaying
 
 
 # ---------------------------------------------------------------------------
@@ -529,6 +548,9 @@ def train(args):
     phase2_entry_step  = None   # fixed at Phase 2 entry (drives Phase 3 gate)
     phase2_total_steps = args.phase2_steps
 
+    frame_sample_rate  = 1.0    # fraction of intermediate frames decoded for mechanics loss
+    sampling_decaying  = False  # True once smooth_acc first crosses thresh
+
 
     # --- Resume (explicit path, or auto-detect latest checkpoint) ---
     resume_step = None
@@ -539,7 +561,7 @@ def train(args):
             print(f'Auto-resuming from latest checkpoint: {resume_path.name}')
 
     if resume_path:
-        step, phase, k_max, lr_current, ckpt_phase2_start = load_checkpoint(
+        step, phase, k_max, lr_current, ckpt_phase2_start, frame_sample_rate, sampling_decaying = load_checkpoint(
             resume_path, encoder, decoder, transition, traj_head,
             optimizer, scheduler
         )
@@ -603,7 +625,7 @@ def train(args):
             # --- Losses ---
             w = get_loss_weights(phase, step, phase2_start_step)
 
-            loss_mech = mechanics_loss(decoder, z_traj, traj, k)
+            loss_mech = mechanics_loss(decoder, z_traj, traj, k, frame_sample_rate)
             loss = w['mechanics'] * loss_mech
 
             if w['trajectory'] > 0:
@@ -671,6 +693,7 @@ def train(args):
                     'k':             k,
                     'p_teacher':     round(p_teacher, 4),
                     'p2_ramp':       round(min(1.0, (step - phase2_start_step) / max(1, PHASE2_RAMP_STEPS)), 4) if phase == 2 and phase2_start_step else None,
+                    'frame_rate':    round(frame_sample_rate, 4),
                     'loss_total':    round(loss_val,               4),
                     'loss_mech':     round(loss_mech.item(),       4),
                     'loss_traj':     round(loss_traj_val,    4) if loss_traj_val    is not None else None,
@@ -732,6 +755,7 @@ def train(args):
                     'threshold':     round(thresh,   4),
                     'above_thresh':  above_thresh,
                     'smooth_acc':    round(float(np.mean(val_acc_buf)) if val_acc_buf else acc, 4),
+                    'frame_rate':    round(frame_sample_rate, 4),
                     'bucket_acc':    {str(b): round(v, 4) for b, v in sorted(bucket_acc.items())},
                     'val_time_s':    round(val_time, 2),
                     'wall_time_s':   round(time.time() - train_start, 1),
@@ -747,20 +771,28 @@ def train(args):
                 )
 
                 # Step scheduler only in Phase 3 (TF=0, val acc is stable signal).
-                # During Phase 2 TF decay, val acc oscillates structurally and
-                # would cause premature LR reductions unrelated to real plateaus.
                 if phase == 3:
                     for pg in optimizer.param_groups:
                         pg['lr'] = lr_current
                     scheduler.step(acc)
                     lr_current = optimizer.param_groups[0]['lr']
 
+                # Frame sampling decay: once smooth_acc crosses thresh, reduce
+                # intermediate frame rate by FRAME_DECAY_STEP each val check.
+                if not sampling_decaying and smooth_acc >= thresh:
+                    sampling_decaying = True
+                    print(f'  [sampling] thresh crossed — decaying frame_sample_rate from {frame_sample_rate:.2f}')
+                if sampling_decaying and frame_sample_rate > 0.0:
+                    frame_sample_rate = round(max(0.0, frame_sample_rate - FRAME_DECAY_STEP), 4)
+                    print(f'  [sampling] frame_sample_rate -> {frame_sample_rate:.2f}')
+
                 if smooth_acc >= thresh:
                     above_thresh += 1
                 else:
                     above_thresh = 0
 
-                if above_thresh >= 2:
+                # Advancement gated: model must prove endpoint-only accuracy
+                if above_thresh >= 2 and frame_sample_rate == 0.0:
                     above_thresh = 0
                     if k_level_idx + 1 < len(K_LEVELS):
                         prev_k      = k_max
@@ -768,6 +800,8 @@ def train(args):
                         k_max       = K_LEVELS[k_level_idx]
                         print(f'  [advance] k_max {prev_k} -> {k_max}')
                         val_acc_buf.clear()
+                        frame_sample_rate = 1.0
+                        sampling_decaying = False
 
                         # Reset LR, scheduler, and TF on each k_max advance
                         lr_current = LR
