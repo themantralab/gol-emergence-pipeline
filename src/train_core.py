@@ -85,12 +85,11 @@ PHASE_WEIGHTS = {
 PHASE2_RAMP_STEPS = 10_000
 
 # Multi-frame mechanics supervision.
-# At each new k_max level, decode up to MAX_INTERMEDIATE_FRAMES random intermediate
-# frames in addition to the endpoint. Once smooth_acc crosses the threshold,
-# frame_sample_rate decays by FRAME_DECAY_STEP per val check until only the
-# endpoint remains. Advancement only allowed at frame_sample_rate == 0.
-MAX_INTERMEDIATE_FRAMES = 16   # max intermediate frames sampled at rate=1.0
-FRAME_DECAY_STEP        = 0.1  # rate reduction per val check after thresh crossed
+# At each new k_max level, frame_sample_rate=1.0: every intermediate frame in
+# [1, k-1] is decoded alongside the endpoint (total k frames). Once smooth_acc
+# crosses the threshold, frame_sample_rate decays by FRAME_DECAY_STEP per val
+# check until only the endpoint remains. Advancement only allowed at rate==0.
+FRAME_DECAY_STEP = 0.1  # rate reduction per val check after thresh crossed
 
 
 def get_loss_weights(phase: int, step: int, phase2_start_step: int | None) -> dict:
@@ -298,7 +297,7 @@ def mechanics_loss(
     frames = [k]
 
     if k > 1 and frame_sample_rate > 0.0:
-        n = max(1, round(frame_sample_rate * min(k - 1, MAX_INTERMEDIATE_FRAMES)))
+        n = max(1, round(frame_sample_rate * (k - 1)))
         intermediates = np.random.choice(range(1, k), size=min(n, k - 1), replace=False).tolist()
         frames.extend(intermediates)
 
