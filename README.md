@@ -1,211 +1,103 @@
-# GoL Emergence Discovery Dataset — v1
+# GoL Emergence Discovery System
 
-**1.5 million Conway's Game of Life initial conditions** with behavioral class labels,
-lifespan metadata, normalized 10-signal trajectories, and full reproducibility seeds.
-Released by [Mantra Labs](https://mantra-labs.com) as the foundation dataset for the
-GoL Emergence Discovery System — a staged research program building a generative model
-that discovers novel emergent structures in cellular automata.
+A dual-model research program for **unsupervised discovery of emergent behaviour in Conway's Game of Life**, by [Mantra Labs](https://mantra-labs.com).
+
+- **World Model** — encodes GoL frames into a structured *hypershell* latent geometry and produces a library of encoded trajectories (the "Z library"). Implemented first.
+- **Explorer Model** — navigates the Z library, identifies frontier regions, proposes novel trajectories, and validates them against the GoL engine. Designed, not yet built.
+
+> **⚠️ Architecture pivot (2026-05-27).** This project previously used a four-stage design with a *learned latent transition function* and behavioural-signal supervision. It has pivoted to an **encode/decode-only world model with no transition function** — the GoL engine is the simulator; the model only learns a structured latent geometry. The canonical design now lives in [`design/`](design/). The pre-existing dataset is retained in full but reclassified by relevance (see [`DATASET.md`](DATASET.md)).
 
 ---
 
-## Dataset at a Glance
+## The Design
 
-| Property | Value |
+| Document | Purpose |
 |---|---|
-| Seeds | 1,500,000 |
-| Grid size | 128 × 128 (16 × 16 seed embedded at center) |
-| Timesteps | 257 (T = 0 … 256) |
-| Signals per timestep | 10 |
-| Behavioral classes | 4 (still\_life, oscillator, dying, glider) |
-| Sampling | Density-stratified (4 bands, 0.03–0.30) |
-| RNG seed | 3750551643 |
-| Generated | 2026-04-30 |
-| Rule | Conway's B3/S23, fixed-zero boundary |
+| [`design/01_design_specification.md`](design/01_design_specification.md) | Canonical spec — architecture, losses, geometry, training protocol |
+| [`design/02_design_rationale.md`](design/02_design_rationale.md) | 13 design decisions with rationale (do not revert without understanding) |
+| [`design/KICKOFF.md`](design/KICKOFF.md) | Implementation kickoff prompt for a fresh build |
+| [`DATASET.md`](DATASET.md) | Dataset manifest: which files the model consumes vs. future-expansion / external-diagnosis |
 
-### Class Distribution
+### World model in brief
 
-| Class | Count | Share |
-|---|---|---|
-| still\_life | 815,485 | 54.4% |
-| oscillator | 365,313 | 24.4% |
-| dying | 307,915 | 20.5% |
-| glider | 11,287 | 0.75% |
+- **Encoder**: CNN → flatten → linear → L2-normalise → unit direction `û ∈ S^(d-1)`, `d = 256`. No centroid subtraction, no global pooling (position is signal).
+- **Decoder**: mirror ConvTranspose, BCE with `pos_weight=50` for the ~378:1 dead:alive imbalance.
+- **No transition function**: the exact, deterministic GoL engine produces trajectories; the model never predicts dynamics.
+- **Hypershell geometry**: a frame at step `n` maps to `z_n = û_n · r·(n+1)`. Direction is learned; radius is applied externally per shell index.
+- **Four losses, single phase, all active from the start**:
+
+  | Loss | Weight | Role |
+  |---|---|---|
+  | L₁ Reconstruction (BCE) | 1.0 | Decode `û` back to the grid |
+  | L₂ Encoder smoothness | 1.0 | Angular distance ↔ normalised Hamming distance |
+  | L₃ Chain clustering (NT-Xent) | **1.5** (must dominate) | Self-supervised trajectory clustering — same-trajectory identity, **no labels** |
+  | L₄ Hyperspherical uniformity | 0.3 | Prevent collapse without imposing isotropy |
+
+The Z library stores `(directions, seed)` per trajectory. Behavioural class structure is intended to **emerge** from L₃ — there is no labelled supervision.
 
 ---
 
 ## Repository Structure
 
 ```
-gol-emergence-dataset/
-│
-├── README.md                      ← you are here
-│
-├── data/                          ← dataset files (see data/README.md)
-│   ├── labels.npy                 ← (1.5M,) behavioral class per seed
-│   ├── lifespans.npy              ← (1.5M,) lifespan in generations
-│   ├── buckets.npy                ← (1.5M,) stratification bucket index
-│   ├── sig_mean.npy               ← (10,)   per-signal population mean
-│   ├── sig_std.npy                ← (10,)   per-signal population std
-│   ├── n_seeds.npy                ← scalar  total seed count
-│   ├── seeds.npy                  ← (1.5M, 16, 16) raw 16×16 seed grids
-│   ├── seeds.json                 ← RNG seeds for full reproducibility
-│   └── diagnostics/               ← generation logs and verification outputs
-│
-├── figures/                       ← analysis figures (see figures/README.md)
-│   ├── signal_samples.png
-│   ├── signal_distributions.png
-│   ├── tsne_signatures.png
-│   ├── lifespan_hist.png
-│   ├── normalization_check.png
-│   ├── cluster_summary.png
-│   ├── temporal_glider.png
-│   └── temporal_oscillator.png
-│
-├── src/                           ← generation and analysis code
-│   ├── simulator.py               ← standalone GoL engine (B3/S23)
-│   ├── generate_data.py           ← full Stage 1 data pipeline
-│   ├── inject_gliders.py          ← glider injection utilities
-│   ├── analyse_data.py            ← post-hoc analysis and figure generation
-│   ├── data_loader.py             ← Stage 2 PyTorch dataset + stratified sampler
-│   ├── train_core.py              ← Stage 2 training loop (progressive rollout)
-│   └── model/                     ← Stage 2 neural network modules
-│       ├── encoder.py             ← CNN encoder: 128×128 grid → 128-dim latent
-│       ├── decoder.py             ← CNN decoder: 128-dim latent → 128×128 grid
-│       ├── transition.py          ← residual MLP: z_t → z_{t+1}
-│       ├── trajectory_head.py     ← MLP: z_t → 10 behavioral signals
-│       ├── vicreg.py              ← VICReg variance+covariance regularisation
-│       └── contrastive.py         ← multiscale temporal contrastive loss
-│
-└── docs/                          ← design documentation
-    ├── overarching_design.md      ← project-wide goals and architecture
-    ├── s1_design.md               ← Stage 1: data pipeline (complete ✓)
-    ├── s2_design.md               ← Stage 2: generative model (upcoming)
-    ├── s3_design.md               ← Stage 3: latent space navigation (upcoming)
-    └── s4_design.md               ← Stage 4: emergence discovery (upcoming)
+gol-emergence-pipeline/
+├── README.md                        ← you are here
+├── DATASET.md                       ← dataset file classification
+├── design/
+│   ├── 01_design_specification.md
+│   ├── 02_design_rationale.md
+│   └── KICKOFF.md
+├── data/                            ← seed corpus + metadata (large arrays on Hugging Face)
+│   ├── seeds.npy                    ← (1.5M, 16, 16) — the model's only direct input
+│   ├── seeds.json                   ← RNG seeds for reproducibility
+│   ├── labels.npy / lifespans.npy / buckets.npy   ← diagnosis / stratification metadata
+│   └── diagnostics/
+└── figures/                         ← analysis figures from dataset generation
 ```
+
+> **No source code is published yet.** The previous implementation was removed at the pivot; the new world model will be implemented fresh from [`design/KICKOFF.md`](design/KICKOFF.md).
 
 ---
 
-## Full Dataset — Hugging Face
+## Dataset
 
-The complete dataset including all large array files is hosted on Hugging Face:
+The model's only direct input is the **seed corpus** (`data/seeds.npy`, 1.5M × 16×16). Trajectories are produced by simulating seeds through the GoL engine at training time. Everything else in the dataset is retained as **future expansion** (lifespan/bucket stratification, FFT novelty basis) or **external diagnosis** (old class labels, behavioural signatures, cluster assignments) — see [`DATASET.md`](DATASET.md) for the full classification.
 
-**[huggingface.co/datasets/themantralab/gol-emergence-dataset](https://huggingface.co/datasets/themantralab/gol-emergence-dataset)**
+The complete dataset, including the large array files, is hosted on Hugging Face:
+
+**[huggingface.co/datasets/themantralab/gol-emergence-pipeline](https://huggingface.co/datasets/themantralab/gol-emergence-pipeline)**
 
 ```python
 from huggingface_hub import snapshot_download
-snapshot_download(repo_id="themantralab/gol-emergence-dataset", repo_type="dataset", local_dir="./gol-data")
+snapshot_download(repo_id="themantralab/gol-emergence-pipeline",
+                  repo_type="dataset", local_dir="./gol-data")
 ```
 
-| File | Shape | Size | Description |
+| File | Shape | Size | Now used for |
 |---|---|---|---|
-| `grids.npy` | (1.5M, 128, 128) uint8 | 23 GB | Full 128×128 initial condition grids |
-| `signatures_norm.npy` | (1.5M, 257, 10) float32 | 15 GB | Normalized 10-signal behavioral trajectories |
-| `sig_reference.npy` | (1.5M, 1290) float32 | ~7 GB | FFT-magnitude novelty reference vectors |
-
-> **Reproducibility**: all large files can be regenerated from `seeds.npy` and `seeds.json`
-> using `src/generate_data.py` with `--rng-seed 3750551643`.
-
----
-
-## Quick Start
-
-```python
-import numpy as np, json
-
-# Load metadata
-labels     = np.load("data/labels.npy")          # (1_500_000,) dtype=U20
-lifespans  = np.load("data/lifespans.npy")        # (1_500_000,) int32
-buckets    = np.load("data/buckets.npy")          # (1_500_000,) int32
-sig_mean   = np.load("data/sig_mean.npy")         # (10,) float32
-sig_std    = np.load("data/sig_std.npy")          # (10,) float32
-
-# Load large files (once available externally)
-grids      = np.load("data/grids.npy")            # (1_500_000, 128, 128) uint8
-sigs       = np.load("data/signatures_norm.npy")  # (1_500_000, 257, 10) float32
-
-# Invert normalization on a single trajectory
-raw = sigs[0] * sig_std + sig_mean
-
-# Filter by class
-glider_idx = np.where(labels == "glider")[0]
-glider_sigs = sigs[glider_idx]  # (11_287, 257, 10)
-
-# Stratified split (use bucket for equal behavioral coverage)
-train_mask = (np.arange(len(labels)) % 10) != 0
-val_mask   = ~train_mask
-```
+| `seeds.npy` | (1.5M, 16, 16) uint8 | 367 MB | **Model input** |
+| `grids.npy` | (1.5M, 128, 128) uint8 | 23 GB | f₀ cache (regenerable) — future/convenience |
+| `signatures_norm.npy` | (1.5M, 257, 10) float32 | 15 GB | External diagnosis only |
+| `sig_reference.npy` | (1.5M, 1290) float32 | ~7 GB | Future explorer novelty basis |
+| `labels.npy` | (1.5M,) | 115 MB | External diagnosis (verify emergent clusters) |
 
 ---
 
-## The 10 Behavioral Signals
+## Dataset Provenance
 
-Each seed produces a trajectory of shape `(257, 10)` — one row per timestep.
-
-| Index | Signal | Description |
-|---|---|---|
-| 0 | P(t) | Population — alive cell count |
-| 1 | Δcx(t) | Center-of-mass x displacement from t=0 |
-| 2 | Δcy(t) | Center-of-mass y displacement from t=0 |
-| 3 | V(t) | Spatial variance of alive cells |
-| 4 | E(t) | Motion energy — cells that changed state |
-| 5 | N\_cc(t) | Connected component count (8-connectivity) |
-| 6 | S\_lag\_2(t) | Temporal self-similarity at lag 2 |
-| 7 | S\_lag\_4(t) | Temporal self-similarity at lag 4 |
-| 8 | S\_lag\_8(t) | Temporal self-similarity at lag 8 |
-| 9 | S\_lag\_16(t) | Temporal self-similarity at lag 16 |
-
-Signals are stored normalized (zero mean, unit std across all seeds and timesteps).
-Use `sig_mean.npy` and `sig_std.npy` to invert.
-
-> **v1.1 note**: `sig_mean.npy`, `sig_std.npy`, `signatures_norm.npy`, and
-> `sig_reference.npy` were recomputed in May 2026 to correct normalisation statistics
-> that were calculated on the pre-stratification pool rather than the balanced dataset.
-> The raw grids and all other files are unchanged.
-
----
-
-## Reproducing the Dataset
-
-```bash
-git clone https://github.com/themantralab/gol-emergence-dataset
-cd gol-emergence-dataset
-pip install numpy scipy matplotlib scikit-learn
-
-# Verify simulator
-python src/simulator.py
-
-# Regenerate full dataset (requires ~27 GB RAM peak, ~8 CPU cores, ~12 hours)
-python src/generate_data.py --n-seeds 1500000 --rng-seed 3750551643 --workers 8
-```
-
----
-
-## Project Roadmap
-
-This dataset is Stage 1 of a four-stage research program.
-
-| Stage | Status | Description |
-|---|---|---|
-| **1 — Data Pipeline** | ✅ Complete | Generate, simulate, and characterize 1.5M GoL seeds |
-| **2 — Core World Model** | 🔄 In Progress | Encoder/decoder + latent transition function with progressive rollout curriculum |
-| **3 — Latent Sampler** | 🔜 Upcoming | Diffusion-based sampling over the latent space |
-| **4 — Emergence Discovery** | 🔜 Upcoming | LOF-based novelty scoring to find unknown structures |
-
-Each stage will be published as a separate release in this repository.
-Design documents for all stages are in `docs/`.
+1.5M density-stratified seeds (4 bands, 0.03–0.30), RNG seed `3750551643`, generated 2026-04-30 under Conway's B3/S23 with a fixed-zero boundary. The original behavioural-signal characterisation (10 signals per frame, 4 heuristic classes: still_life / oscillator / dying / glider) is **retained for diagnosis** but is no longer part of the model's objective (see Decision 6 and Decision 10 in the rationale).
 
 ---
 
 ## Citation
 
 ```bibtex
-@dataset{koegler2026gol,
+@misc{koegler2026gol,
   author    = {Koegler, Maxwell},
-  title     = {{GoL Emergence Discovery Dataset v1}},
+  title     = {{GoL Emergence Discovery System}},
   year      = {2026},
   publisher = {Mantra Labs},
-  url       = {https://github.com/themantralab/gol-emergence-dataset}
+  url       = {https://github.com/themantralab/gol-emergence-pipeline}
 }
 ```
 
@@ -213,7 +105,6 @@ Design documents for all stages are in `docs/`.
 
 ## License
 
-Code (`src/`) is released under the **MIT License**.
-Data and figures are released under **CC BY 4.0**.
+Documentation and design are released under **CC BY 4.0**. Future source code will be released under the **MIT License**.
 
 © 2026 Mantra Labs

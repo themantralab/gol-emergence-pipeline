@@ -1,7 +1,12 @@
 # Data Files
 
+> **⚠️ See [`../DATASET.md`](../DATASET.md) for the current classification** of every file by
+> how the (post-pivot) world model relates to it: **consumed** / **future expansion** /
+> **external diagnosis**. The model's only direct input is `seeds.npy`; the tables below
+> describe the raw files as originally generated.
+
 > **Full dataset (including large array files):**
-> [huggingface.co/datasets/themantralab/gol-emergence-dataset](https://huggingface.co/datasets/themantralab/gol-emergence-dataset)
+> [huggingface.co/datasets/themantralab/gol-emergence-pipeline](https://huggingface.co/datasets/themantralab/gol-emergence-pipeline)
 
 ## Files in this repo
 

@@ -22,3 +22,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Local-only development log — never publish
+DEV_LOG.md
