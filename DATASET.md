@@ -23,13 +23,13 @@ This dataset predates the architecture pivot to the encode/decode-only world mod
 
 | File | Shape / size | Role |
 |------|-------------|------|
-| `lifespans.npy` | (1.5M,) · 5.8M | Per-seed lifespan. Used by the stratified training sampler so long-lived / rare-behaviour seeds get fair representation. |
-| `buckets.npy` | (1.5M,) · 5.8M | Density-band bucket assignment per seed (4 bands: 0.03–0.08, 0.08–0.15, 0.15–0.22, 0.22–0.3). Read by the stratified sampler to balance training batches across bands. |
+| `lifespans.npy` | (1.5M,) · 5.8M | Per-seed lifespan. **Sole stratification key.** Quartile bins are computed on the training pool (lifespan ≥ 32); the sampler draws one slot per quartile per batch so rare long-lived behaviours (gliders, oscillators, spaceships) get equal share. Lifespan also bounds the L₃ fingerprint sampling window so dead frames never enter a fingerprint. |
 
 ## FUTURE EXPANSION
 
 | File | Shape / size | Why retained |
 |------|-------------|--------------|
+| `buckets.npy` | (1.5M,) · 5.8M | Density-band bucket assignment (4 bands: 0.03–0.08, 0.08–0.15, 0.15–0.22, 0.22–0.3). Considered for stratification, rejected because density doesn't correlate with behaviour. Kept for diagnostic comparisons (e.g. is angular structure correlated with seed density?). |
 | `sig_reference.npy` | (1.5M, 1290) float32 · 7.3G | Chunked FFT magnitude spectra of behavioural signatures — designed as a phase-invariant **novelty basis for the explorer**. Not used by the world model; candidate input for explorer novelty scoring later. |
 | `grids.npy` | (1.5M, 128, 128) uint8 · 23G | Single embedded seed frame (f₀) per seed. Regenerable from `seeds.npy`. Retained as a convenience cache; could be deleted to reclaim 23G if needed. |
 
