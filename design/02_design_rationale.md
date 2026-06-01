@@ -128,15 +128,15 @@ L₃ works as follows: two non-overlapping random subsamples of frames from the 
 
 ---
 
-## Decision 12: Seed storage is recommended, not strictly required
+## Decision 12: Seed is always stored
 
-**What was discussed:** Whether to store the original 16×16 binary seed per trajectory.
+**What was decided (2026-06-01):** Each Z-library entry stores the original 16×16 binary seed alongside the direction tensor. *(Previously marked as a recommendation rather than a settled choice; now locked.)*
 
-**Why store it:** Decoder reconstructions are approximate. For bit-perfect trajectory reproducibility, the original 32 bytes must be stored. Storage cost is negligible relative to the `(k+1) × d × 4 bytes` per trajectory direction tensor.
+**Why store it:** Decoder reconstructions are approximate. For bit-perfect trajectory reproducibility (running the GoL engine forward from the exact original seed), the original 32 bytes must be stored. Storage cost is negligible: 32 bytes per trajectory against `(k+1) × d × 2 bytes` for the float16 directions (~257 KB per trajectory at k=256, d=256).
 
-**Why it could be dropped:** If the goal is "good enough to re-simulate and verify approximately," `directions[0]` can be decoded and cropped to recover an approximate seed.
+**Why we didn't drop it:** `directions[0]` could in principle be decoded and cropped to recover an approximate seed, but decoder reconstructions are lossy and bit-perfect reproducibility is cheap insurance against decoder drift over the lifetime of the Z library.
 
-**Recommendation:** Store the seed unless storage becomes a real constraint. **This is a recommendation, not a settled architectural decision.** Either choice is defensible.
+**Do not drop:** the seed field unless storage becomes a hard constraint AND bit-perfect re-simulation is not required for any downstream task (including explorer validation).
 
 ---
 
@@ -152,6 +152,8 @@ L₃ works as follows: two non-overlapping random subsamples of frames from the 
 
 **Do not change:** the smoothness loss uses Hamming distance unless there's a specific reason to switch. If the encoder is later changed to operate on something other than dense binary grids, revisit this choice.
 
+**Scale refinement (2026-06-01):** raw `MSE(cos_dist, hamming)` has a near/far scale imbalance — within-trajectory Hamming distances cluster around 0.001–0.006, cross-trajectory around 0.05–0.30, so cross-trajectory residuals dominate MSE by 2500–10000× and starve the near end of gradient. The spec was amended to (a) sqrt-scale the Hamming target so the [0, 1] range is actually populated, and (b) compute within- and cross-trajectory sub-losses separately and average, so the optimiser gives both regimes equal attention. The choice of *metric* (Hamming) is unchanged; only its scaling and the loss aggregation changed.
+
 ---
 
 ## What the implementing Claude should know
@@ -162,4 +164,4 @@ The primary success criterion for the world model is: after training, can the Z 
 
 The secondary success criterion is: does the latent geometry have enough structure (clear cluster boundaries, identifiable frontiers, smooth interpolation) that an explorer model built on top of it has something to work with?
 
-Two items are marked as recommendations rather than settled choices: Decision 12 (seed storage) and the "no k curriculum" claim in the training protocol. Confirm these with the user before relying on them.
+The previously-flagged "recommendations rather than settled choices" — Decision 12 (seed storage) and the no-curriculum claim in the training protocol — were both **locked on 2026-06-01**. See Decision 12 above and the "Confirmed locked" note in the training-protocol section of the specification. All other open questions in the spec have been resolved or assigned defaults; check the spec's "Open questions — status" section before assuming anything is still under discussion.

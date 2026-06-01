@@ -19,7 +19,7 @@ The world model is implemented first. The explorer is designed but not yet imple
 - Each trajectory is a sequence of frames [f₀, f₁, ..., fₖ]
 - Dead-to-alive ratio approximately 378:1
 
-A pre-generated dataset of 1.5M seeds (with lifespan/bucket stratification metadata) already exists. See `../DATASET.md` for exactly which files the model consumes versus which are retained for future expansion or external diagnosis. The model's only direct input is the seed set; trajectories are produced by simulating seeds through the GoL engine.
+A pre-generated dataset of 1.5M seeds with lifespan/bucket stratification metadata already exists. See `../DATASET.md` for exactly which files the model consumes versus which are retained for future expansion or external diagnosis. The model's direct inputs are the **seed corpus** (`seeds.npy`, the source of every training trajectory) plus the **stratification metadata** (`lifespans.npy`, `buckets.npy`, read by the stratified batch sampler). Trajectories themselves are produced by simulating seeds through the GoL engine at training time; nothing else in the dataset is on the training path.
 
 ---
 
@@ -102,28 +102,39 @@ loss_recon = F.binary_cross_entropy_with_logits(
 **L₂ — Encoder smoothness** (weight 1.0)
 Forces angular distance in latent space to correlate with mechanical distance in grid space. The mechanical distance metric is **normalised Hamming distance** (pixel-wise XOR count over total cells) — the natural complement to BCE on binary grids, operating directly on the grid representation without requiring coordinate extraction.
 
+The naive `MSE(cosine_dist, hamming_dist)` formulation has a scale problem: within-trajectory Hamming distances are typically 0.001–0.006 (10–100 cells of 16,384), while cross-trajectory Hamming distances are 0.05–0.30 — a 50–100× scale gap. Under raw MSE the cross-trajectory residuals dominate by 2500–10000×, starving the near-end of gradient and defeating the "local smoothness" the loss is meant to provide. Two refinements address this:
+
+1. **Sqrt-scale the Hamming target** so small differences get meaningful weight (1-pixel diff goes from 0.000061 → 0.0078). Sqrt is monotonic, so angular distance still tracks mechanical distance, just non-linearly.
+2. **Compute within- and cross-trajectory sub-losses separately** and average, so the optimiser spends equal attention on both regimes regardless of their absolute scale.
+
 ```python
 def hamming_distance(grids_a, grids_b):
     # grids: (B, 1, 128, 128) binary float tensors
     diff = (grids_a != grids_b).float()        # XOR
     return diff.sum(dim=[1, 2, 3]) / (128 * 128)  # (B,) normalised [0, 1]
 
-def smoothness_loss(grids_a, grids_b, encoder):
-    u_a = encoder(grids_a)
-    u_b = encoder(grids_b)
-    angular_dist = 1 - (u_a * u_b).sum(-1)     # (B,) cosine distance in [0, 2]
-    angular_dist = angular_dist / 2            # normalise to [0, 1]
-    mech_dist = hamming_distance(grids_a, grids_b)
-    return F.mse_loss(angular_dist, mech_dist)
+def cos_dist(u_a, u_b):
+    return (1 - (u_a * u_b).sum(-1)) / 2       # (B,) normalised [0, 1]
+
+def smoothness_subloss(grids_a, grids_b, encoder):
+    u_a, u_b   = encoder(grids_a), encoder(grids_b)
+    target     = torch.sqrt(hamming_distance(grids_a, grids_b))
+    prediction = cos_dist(u_a, u_b)
+    return F.mse_loss(prediction, target)
+
+def smoothness_loss(within_pairs, cross_pairs, encoder):
+    L_within = smoothness_subloss(*within_pairs, encoder)
+    L_cross  = smoothness_subloss(*cross_pairs,  encoder)
+    return (L_within + L_cross) / 2
 ```
 
-Pair construction: in each training batch, half of pairs are within-trajectory (consecutive or nearby frames, small Hamming distance) and half are cross-trajectory (random frames from different seeds, large Hamming distance). This range coverage is essential — without large-distance pairs, the loss cannot calibrate the high end of the angular scale.
+Pair construction: each batch contains both **within-trajectory pairs** (two random frames from the same chain, small Hamming) and **cross-trajectory pairs** (two random frames from different chains, large Hamming). This range coverage is essential — within-only pairs would let the encoder collapse everything close; cross-only pairs would let it scatter maximally. Both ends are needed to learn the slope of the calibration.
 
 **L₃ — Chain clustering** (weight 1.5, must dominate)
 NT-Xent contrastive on trajectory-level fingerprints. Fully self-supervised: positive pairs are two non-overlapping subsamples of frames from the same trajectory; negative pairs are subsamples from different trajectories.
 
 ```python
-def chain_fingerprint(directions, n_samples=16):
+def chain_fingerprint(directions, n_samples=32):
     # directions: (k+1, d) unit vectors
     idx = torch.randperm(directions.shape[0])[:n_samples]
     idx = idx.sort().values  # preserve temporal order
@@ -161,14 +172,16 @@ L_total = L₁ + 1.0·L₂ + 1.5·L₃ + 0.3·L₄
 Per trajectory, store:
 ```python
 {
-    'directions': tensor of shape (k+1, d),   # one unit vector per frame
-    'seed':       binary 16×16 array,         # ground-truth seed (recommended)
+    'directions': tensor of shape (k+1, d) dtype=float16,   # one unit vector per frame
+    'seed':       binary 16×16 array      dtype=uint8,      # ground-truth seed
 }
 ```
 
 Trajectory length k is read from `directions.shape[0] - 1`. Shell radii are computed when needed via `r * (n+1)`. No metadata scalars.
 
-The seed field is **recommended but technically optional** — the seed could be recovered by decoding `directions[0]` and cropping to the 16×16 embedding region. It is stored explicitly because decoder reconstructions are approximate, and exact reproducibility (bit-perfect re-simulation from seed) requires the original 32 bytes. If storage becomes a constraint or bit-perfect reproducibility is not required, the seed field may be dropped.
+**Confirmed locked (2026-06-01): seed is always stored.** 32 bytes per trajectory is negligible insurance against decoder drift and gives a ground-truth anchor for reconstruction evaluation. The seed could in principle be recovered by decoding `directions[0]` and cropping to the 16×16 embedding region, but decoder reconstructions are approximate; exact reproducibility (bit-perfect re-simulation) requires the original bytes.
+
+**Confirmed locked (2026-06-01): directions stored as float16.** Angular precision on the unit sphere at 16-bit is far more than enough. Storage estimate for the full 1.5M-trajectory Z cloud at k=256: `1.5M × 257 × 256 × 2 bytes ≈ 193 GB` (half the float32 cost). Fits comfortably in available disk (2 TB).
 
 ---
 
@@ -202,7 +215,7 @@ The explorer will eventually:
 
 Single phase. All four losses active from the start.
 
-**On curriculum:** the previous version of this system used a curriculum on rollout horizon k_max, because it had a transition function that needed to be trained at progressively longer horizons. The current design has no transition function — the encoder processes each frame independently and the GoL engine produces the full trajectory in one shot. There is no rollout to curriculum. Trajectories can be encoded at full length from the start. **This is an inference from the architectural change, not an explicit decision — confirm before relying on it.**
+**On curriculum:** the previous version of this system used a curriculum on rollout horizon k_max, because it had a transition function that needed to be trained at progressively longer horizons. The current design has no transition function — the encoder processes each frame independently and the GoL engine produces the full trajectory in one shot. There is no rollout to curriculum. Trajectories are encoded at full length from the start. **Confirmed locked (2026-06-01): no curriculum.**
 
 Recommended hyperparameters:
 - d = 256
@@ -226,12 +239,12 @@ The Z library is the working substrate for the explorer.
 
 ---
 
-## Open questions to settle before training
+## Open questions — status
 
-1. **Shell radius constant r.** The absolute value does not affect angular geometry but does affect any operation using ambient-space distances. Default r = 1 (shell n at radius n+1). Confirm whether anything in the pipeline depends on a particular scale.
+1. **Shell radius constant r.** *Locked 2026-06-01: r = 1.* Shell n sits at radius n+1. No pipeline operation depends on a different scale.
 
-2. **Smoothness loss pair sampling rate.** What fraction of within- vs cross-trajectory pairs per batch? Default 50/50; may need tuning if angular distance collapses or fails to distinguish nearby states.
+2. **Smoothness loss pair sampling rate.** *Default 50/50 within- vs cross-trajectory pairs per batch.* Subject to re-tuning if Stage 3 diagnostics show angular distance collapsing or failing to distinguish nearby states.
 
-3. **Chain fingerprint subsample size.** n_samples = 16 is a starting point trading expressiveness against cost. Verify the fingerprint is stable across re-samplings of the same trajectory before relying on it.
+3. **Chain fingerprint subsample size.** *Locked 2026-06-01: n_samples = 32.* Verify cosine self-similarity ≥ 0.9 averaged over held-out trajectories. If unstable, bump to 48; only drop to 24 after stability is confirmed at lower cost.
 
-4. **Trajectory variation in the training set.** How many distinct seeds, and how is the seed distribution chosen? Random uniform 16×16 binary seeds produces a heavily skewed distribution (most patterns die quickly). The existing dataset already carries lifespan/bucket stratification metadata (`../DATASET.md`) — decide whether to use it for stratified sampling toward long-lived patterns.
+4. **Trajectory variation in the training set.** *Locked 2026-06-01: stratified sampling using the dataset's existing `lifespans.npy` / `buckets.npy` metadata*, so rare classes (e.g. gliders, 0.75%) get fair representation in each batch. The full 1.5M trajectories are encoded into the Z cloud regardless; stratification only changes how often each is shown during training.

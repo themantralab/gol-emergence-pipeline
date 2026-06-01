@@ -22,24 +22,37 @@ After reading, please confirm your understanding by summarising:
 4. The four losses and their roles, including how L₃ is supervised without labels
 5. The hypershell geometry and how shell radius relates to encoder output
 
-Also call out any decisions in the rationale you would have done differently — not to argue them, but so I know what your priors are pulling against. Two items the rationale flags as "recommendations rather than settled choices" (Decision 12 on seed storage, and the no-curriculum claim in the training protocol) — confirm these with me before relying on them.
+Also call out any decisions in the rationale you would have done differently — not to argue them, but so I know what your priors are pulling against.
 
-Then propose an implementation plan with these stages:
+## Locked decisions — do not re-litigate
 
-- **Stage 1**: Data pipeline — GoL trajectory generation from the existing 16×16 seed set (`DATASET.md`), frame batching, Hamming distance utility. Reuse the stored seeds; do not regenerate unless we decide on a new seed distribution.
-- **Stage 2**: Encoder + Decoder modules with reconstruction loss (L₁) only — verify it can autoencode a single GoL frame to acceptable fidelity given the 378:1 class imbalance
-- **Stage 3**: Add encoder smoothness loss (L₂) — verify angular distances correlate with Hamming distances on real GoL frame pairs (within- and cross-trajectory)
-- **Stage 4**: Add chain clustering loss (L₃) — verify two random subsamples of the same trajectory produce similar fingerprints, and that gross behavioural classes start to occupy distinguishable angular regions on each shell (use retained `labels.npy` for diagnosis only)
-- **Stage 5**: Add hyperspherical uniformity (L₄) — verify directions remain spread across S^(d-1) and clusters don't all collapse to one region
-- **Stage 6**: Z library construction and inspection — encode a held-out set of trajectories, store as (directions, seed) pairs, and produce diagnostic visualisations of the chain geometries
+These were all settled before this conversation begins. Treat them as fixed unless I explicitly ask to revisit:
 
-Use real GoL trajectories from the start. The encoder needs real frames to learn from, and Stage 3 onward requires real mechanical distances between actual GoL frames.
+| Decision | Value |
+|---|---|
+| Latent dim `d` | 256 |
+| Shell radius constant `r` | 1 (shell n at radius n+1) |
+| L₂ formulation | `(L_within + L_cross) / 2` with `target = sqrt(hamming)` per sub-loss — see spec |
+| L₂ pair sampling | 50/50 within- vs cross-trajectory pairs per batch |
+| L₃ fingerprint size | `n_samples = 32` (32 frames per fingerprint, two independent draws per trajectory per step) |
+| Curriculum | None — encode full-length trajectories from the start |
+| Seed sampling | Stratified, using existing `lifespans.npy` / `buckets.npy` metadata |
+| Z library coverage | Full 1.5M trajectories; directions stored as float16 (~193 GB), seed stored as uint8 |
+| Hardware | CPU only, 32 GB RAM, 2 TB disk — no GPU |
+| Training | Single phase, all losses active from start, Adam LR 3e-4, batch size 32 trajectories |
 
-For each stage, specify:
-- What concrete metric confirms it's working
-- What failure modes to watch for (dimensional collapse, all-zero reconstructions, cluster homogenisation)
-- A rough indicator of how long the stage should take to converge
+The spec's "Open questions — status" section reflects these locks; the rationale's Decisions 12 (seed storage) and the no-curriculum claim are both now confirmed locked.
 
-Use PyTorch. **Hardware: CPU only, 32GB RAM, 2TB disk — no GPU.** Plan for batch processing accordingly. Target trajectories of length k=256 with d=256 latent dimension and batch size 32. Adam optimiser, LR 3e-4.
+## Implementation plan to propose
 
-Do not begin coding until I confirm the implementation plan. Treat any design ambiguities in the spec as questions to ask, not assumptions to make. Open questions are listed at the bottom of the spec — address those explicitly in your plan.
+Front-load reconstruction quality before adding the geometric losses:
+
+- **Stage 1** — `engine.py` + `data.py`: B3/S23 simulator (fixed-zero boundary, seed embedded at offset (24, 24)), stratified seed sampler reading `data/buckets.npy`, L₂ pair sampler (50/50 within/cross), L₃ fingerprint subsampler (32 frames × 2 independent draws). Gate: canonical patterns reproduce bit-exactly; one training-batch worth of trajectories generates in under a couple of seconds on CPU.
+- **Stage 2** — `model.py` + `losses.py` (L₁ only) + `train.py` (L₁ only): single-frame autoencoding with BCE `pos_weight=50`. **High bar: alive-cell F1 ≥ 0.95 and dead-cell F1 ≥ 0.99 on a held-out set** before adding any other loss. If unreachable, the architecture is too tight and we revisit (bigger decoder or `d=384/512`) *before* introducing the geometric losses.
+- **Stage 3** — add L₂, L₃, L₄ all at once: weights 1.0 / 1.0 / 1.5 / 0.3, all from start. Per-step validation: recon F1 holds, fingerprint self-similarity ≥ 0.9, Hamming↔cosine Pearson ≥ 0.8.
+- **Stage 4** — `diag.py`: per-shell silhouette by `labels.npy` (diagnosis only, never a training signal), 2D projections of angular distribution per shell, reconstruction gallery. Gate: silhouette ≥ 0.5 on early shells, reconstructions visually near-perfect.
+- **Stage 5** — `zlib.py`: encode all 1.5M trajectories → memory-mapped float16 directions + uint8 seeds. Gate: Z library written, spot-checks on glider/oscillator/still-life trajectories decode back to recognizable frames.
+
+For each stage, specify the concrete metric that confirms it's working, the failure modes to watch for (dimensional collapse, all-dead reconstructions, cluster homogenisation, fingerprint instability), and a rough indicator of how long it should take to converge on CPU.
+
+Use PyTorch. Treat any design ambiguity in the spec as a question to ask, not an assumption to make. Do not begin coding until I confirm the plan.
