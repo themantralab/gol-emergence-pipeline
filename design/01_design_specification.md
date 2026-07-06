@@ -1,5 +1,10 @@
 # GoL Emergence Discovery — Design Specification
 
+> **⚠️ SUPERSEDED (historical record).** Describes the *hypershell* latent design,
+> replaced by the vanilla autoencoder after it hit a ~0.74 reconstruction ceiling.
+> See [`03_final_architecture.md`](03_final_architecture.md) and the repo README for
+> the current trained model. Retained for the record.
+
 ## System overview
 
 A dual-model system for unsupervised discovery of emergent behaviour in Conway's Game of Life.

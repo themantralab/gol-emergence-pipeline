@@ -1,5 +1,10 @@
 # GoL Discovery System — Design Rationale
 
+> **⚠️ SUPERSEDED (historical record).** Rationale for the *hypershell* latent
+> design, replaced by the vanilla autoencoder. See
+> [`03_final_architecture.md`](03_final_architecture.md) and the repo README for the
+> current model. Retained for the record.
+
 This document records the non-obvious decisions in the design and the reasoning behind them. The implementing Claude should not revert these choices without first understanding the rationale, because each one was reached after considering and rejecting alternatives.
 
 ---

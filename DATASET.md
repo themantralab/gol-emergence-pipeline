@@ -1,6 +1,6 @@
 # Dataset Manifest
 
-Pre-generated GoL dataset in `data/`. **1.5M random 16×16 seeds**, embedded at offset (24, 24) on a 128×128 grid, simulated under B3/S23.
+Pre-generated GoL dataset in `data/`. **1.5M random 16×16 seeds**, simulated under B3/S23 on a 128×128 grid. (The cached `grids.npy` frames and precomputed `lifespans.npy` used the original fixed offset (24, 24); the current world model embeds seeds at **center-biased random offsets** at train time — see DEV_LOG — but the seed corpus itself is offset-agnostic and unchanged.)
 
 This dataset predates the architecture pivot to the encode/decode-only world model (see `design/`). Most of it was built for the previous transition-function design and its behavioural-signal supervision. It has been **retained in full**. This document classifies every file by how the *current* world model relates to it:
 
@@ -23,7 +23,7 @@ This dataset predates the architecture pivot to the encode/decode-only world mod
 
 | File | Shape / size | Role |
 |------|-------------|------|
-| `lifespans.npy` | (1.5M,) · 5.8M | Per-seed lifespan. **Sole stratification key.** Quartile bins are computed on the training pool (lifespan ≥ 32); the sampler draws one slot per quartile per batch so rare long-lived behaviours (gliders, oscillators, spaceships) get equal share. Lifespan also bounds the L₃ fingerprint sampling window so dead frames never enter a fingerprint. |
+| `lifespans.npy` | (1.5M,) · 5.8M | Per-seed lifespan. **Sole stratification key.** Quartile bins are computed on the training pool (lifespan ≥ 32); the sampler draws one slot per quartile per batch so rare long-lived behaviours (gliders, oscillators, spaceships) get equal share. Lifespan also bounds the per-trajectory frame-sampling window `[0, lifespan]` so dead frames never enter a batch. (The final model also reuses these labels directly as free supervision for the planned early-frame fate-prediction experiment.) |
 
 ## FUTURE EXPANSION
 

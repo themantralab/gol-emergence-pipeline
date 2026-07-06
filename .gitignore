@@ -25,3 +25,10 @@ Thumbs.db
 
 # Local-only development log — never publish
 DEV_LOG.md
+
+# Model checkpoints (large; hosted separately if needed)
+checkpoints/
+*.pt
+
+# Reconstruction/diagnostic scratch output
+logs/
