@@ -7,9 +7,8 @@ computed it.
 `a ± b` denotes mean ± sample standard deviation (ddof=1) over 5 seeds, produced
 by `multi_seed.py`. Values without a `±` are single runs.
 
-> **Reproducing these requires `checkpoints/best.pt`, which is not yet
-> published** (see the README). The protocols are fully specified here and in
-> the scripts, so the measurements are re-derivable by retraining.
+> **To reproduce:** fetch `best.pt` and the data files as shown in the README,
+> then run the script named in each section. Everything runs on CPU.
 
 ---
 

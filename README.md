@@ -135,18 +135,41 @@ the 1024 latent dimensions do.
 
 ### To verify the results
 
-> **The trained checkpoint is not currently published.** Every diagnostic loads
-> `checkpoints/best.pt` — a 269 MB file that is not in this repository and not
-> yet hosted anywhere. Until it is, the diagnostics cannot be re-run as written
-> and the numbers above cannot be reproduced from this repository alone. The
-> scripts, the exact protocols and the seed corpus *are* all here, so the
-> measurements are fully specified and re-derivable by retraining
-> (~30 h, CPU). Open an issue if you would like the checkpoint hosted.
+Fetch the trained checkpoint and the two data files the diagnostics need:
 
-The seed corpus is on
-[Hugging Face](https://huggingface.co/datasets/themantralab/gol-emergence-pipeline);
-place `seeds.npy` and `lifespans.npy` under `data/`. [`DATASET.md`](DATASET.md)
-describes every file and which are actually consumed.
+```bash
+pip install huggingface_hub
+python3 - <<'EOF'
+from huggingface_hub import hf_hub_download
+import shutil, pathlib
+pathlib.Path("checkpoints").mkdir(exist_ok=True); pathlib.Path("data").mkdir(exist_ok=True)
+R = "themantralab/gol-emergence-pipeline"
+shutil.copy(hf_hub_download(R, "best.pt"), "checkpoints/best.pt")          # 269 MB
+for f in ["seeds.npy", "lifespans.npy", "labels.npy"]:
+    shutil.copy(hf_hub_download(R, f, repo_type="dataset"), f"data/{f}")   # ~510 MB
+EOF
+```
+
+Then any diagnostic runs directly:
+
+```bash
+python3 threshold_sweep.py        # reconstruction, calibration, thresholds
+python3 dynamics_probe.py         # rollout vs the autoencoder ceiling
+python3 persistence_baseline.py   # + the predict-no-change null model
+python3 multi_seed.py             # 5-seed error bars (slowest; ~40 min)
+```
+
+Each prints a self-describing report. Every number in
+[`RESULTS.md`](RESULTS.md) names the script that produces it.
+
+The checkpoint is `best.pt` at step 148,500 — 269,139,477 bytes, SHA-256
+`b2a2ca4b9e19c9e24070b347d45ccf9ec72261a74ae43a62dccb84dfc9247243`. Model card
+and limitations:
+[huggingface.co/themantralab/gol-emergence-pipeline](https://huggingface.co/themantralab/gol-emergence-pipeline).
+
+[`DATASET.md`](DATASET.md) describes every data file and which are actually
+consumed. Note that the diagnostics are read-only with respect to the
+checkpoint — none of them modify or retrain it.
 
 ### To extend the study
 
@@ -192,6 +215,10 @@ data/                     Small metadata; large arrays on Hugging Face
 DATASET.md                What each data file is, and which are consumed
 RESULTS.md                Every measured number with its source script
 ```
+
+## License
+
+Code is MIT licensed — see [`LICENSE`](LICENSE). The dataset is CC BY 4.0.
 
 ## Citation
 
