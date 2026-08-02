@@ -1,5 +1,5 @@
 """
-Stage 1 data pipeline for the GoL world model.
+Data pipeline for the GoL autoencoder.
 
 Reads the pre-generated seed corpus and lifespan metadata, applies the locked
 sampling rules (lifespan-quartile stratification, lifespan >= 32 training
@@ -169,7 +169,7 @@ def hamming_distance(grids_a: np.ndarray, grids_b: np.ndarray) -> np.ndarray:
 
 
 # -----------------------------------------------------------------------------
-# Stage 1 gate: pool construction + one full batch end-to-end with timing
+# Performance gate: pool construction + one full batch end-to-end with timing
 # -----------------------------------------------------------------------------
 
 def _stage1_gate() -> None:
@@ -204,7 +204,7 @@ def _stage1_gate() -> None:
     print(f"  L2 within: n={len(h_within)}  Hamming mean={h_within.mean():.4f}  range=[{h_within.min():.4f}, {h_within.max():.4f}]")
     print(f"  L2 cross:  n={len(h_cross)}   Hamming mean={h_cross.mean():.4f}  range=[{h_cross.min():.4f}, {h_cross.max():.4f}]")
     print(f"  L3 fp_a shape={fp_a.shape}, fp_b shape={fp_b.shape}")
-    print(f"  Stage 1 gate (<2s total per batch): {'PASS' if (t4 - t0) < 2.0 else 'FAIL'}")
+    print(f"  perf gate (<2s total per batch): {'PASS' if (t4 - t0) < 2.0 else 'FAIL'}")
 
 
 if __name__ == "__main__":

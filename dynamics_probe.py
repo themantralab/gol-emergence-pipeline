@@ -1,5 +1,5 @@
 """
-Decisive readiness tests (per advisor): sharpness can't tell good latents from
+Decisive readiness tests: sharpness can't tell good latents from
 garbage (noise decodes sharp too), so we use the metrics that CAN.
 
   1. CYCLE-CONSISTENCY: latent -> decode -> binarize -> re-encode -> z'.

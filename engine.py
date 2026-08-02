@@ -3,7 +3,7 @@ Conway's Game of Life simulator. B3/S23, fixed-zero boundary.
 
 The world model never predicts dynamics — this engine is the ground truth.
 Vectorised over the batch dimension so 32 trajectories step together; this is
-what makes the Stage 1 <2s/batch gate reachable on CPU.
+what makes the <2s/batch data-loading target reachable on CPU.
 
 A "trajectory" is the 257-frame sequence [f_0, f_1, ..., f_k] produced by
 embedding a 16x16 seed at offset (24, 24) on a 128x128 grid and iterating the
