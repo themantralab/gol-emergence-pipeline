@@ -214,11 +214,32 @@ if __name__ == "__main__":
 
     # Conceptual receptive-field check:
     # Each 16×16 latent position should see exactly one 8×8 input region.
-    test_in = torch.zeros(1, 1, GRID_HW, GRID_HW)
-    test_in[0, 0, 0, 0] = 1.0  # single alive pixel at top-left corner
-    h = enc.conv(test_in).abs().sum(dim=1).squeeze(0)  # (16, 16)
-    nonzero = (h > 1e-6).nonzero()
-    print(f"\nRF sanity: single pixel at (0,0) activates {len(nonzero)} latent positions")
-    if len(nonzero) > 0:
-        print(f"  activated positions: {nonzero.tolist()}")
-    print(f"  ✓ should be exactly 1 position at (0,0) for tile-disjoint encoder")
+    #
+    # NOTE: this MUST be a differential test. Thresholding |activation| directly
+    # does not work: the convs have bias terms, so GELU(bias) is non-zero at
+    # every position even for an all-zero input, and every position would look
+    # "activated" regardless of the receptive field. Compare against the
+    # all-zero baseline instead, so only genuinely pixel-driven changes count.
+    base = torch.zeros(1, 1, GRID_HW, GRID_HW)
+    h0 = enc.conv(base)
+    print("\nRF sanity (differential: with-pixel minus all-zero baseline)")
+    ok = True
+    for (r, c) in [(0, 0), (30, 30), (64, 64), (127, 127)]:
+        test_in = base.clone()
+        test_in[0, 0, r, c] = 1.0
+        delta = (enc.conv(test_in) - h0).abs().sum(dim=1).squeeze(0)  # (16, 16)
+        changed = (delta > 1e-6).nonzero()
+        expect = [r // 8, c // 8]
+        good = len(changed) == 1 and changed[0].tolist() == expect
+        ok &= good
+        print(f"  pixel({r:>3},{c:>3}) -> changed {len(changed)} position(s): "
+              f"{changed.tolist()}  expected [{expect}]  {'OK' if good else 'FAIL'}")
+    print(f"  {'✓ tile-disjoint encoder confirmed' if ok else '✗ NOT tile-disjoint'}")
+
+    # The global bottleneck is the other half of the design: after `project`,
+    # a single pixel should influence essentially all of z.
+    z_base = enc(base)
+    t = base.clone(); t[0, 0, 30, 30] = 1.0
+    dz = (enc(t) - z_base).abs().squeeze(0)
+    print(f"  after project(): one pixel changes {int((dz > 1e-6).sum())}/{dz.numel()} "
+          f"z dims (global by design; localisation lives in enc.conv, not z)")
